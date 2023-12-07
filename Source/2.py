@@ -1,9 +1,21 @@
 import asn1
 import sys
 import base64
+from argparse import ArgumentParser
 
 
 decoder = asn1.Decoder()
+RSA_OID = '1.2.840.113549.1.1.1'
+RSA_NOTATION = {
+    'modulus': 'n',
+    'public_exponent': 'e',
+    'private_exponent': 'd',
+    'prime_1': 'p',
+    'prime_2': 'q',
+    'exponent_1': 'x',
+    'exponent_2': 'y',
+    'coefficient': 'q_inv'
+}
 
 
 def decode(data) -> list:
@@ -37,46 +49,71 @@ def read_der(decoder: asn1.Decoder) -> list:
     return result
 
 
-def extract_private_key_pkcs8(decoded_der: list):
+def extract_private_key_pkcs8(decoded_der: list) -> dict:
     result = {}
 
     key_info = decoded_der[0]['value']
     result['version'] = key_info[0]['value']
-    result['private_key_algorithm'] = key_info[1]['value']
-    result['private_key'] = {}
+    result['algorithm'] = 'RSA' if key_info[1]['value'] == RSA_OID else key_info[1]['value']
+    result['parameters'] = {}
 
     private_key = decode(key_info[2]['value'])
-    private_key_info = private_key[0]['value']
+    key_parameters = private_key[0]['value']
 
-    result['private_key']['enc_algo_id'] = private_key_info[0]['value']
-    result['private_key']['modulus'] = private_key_info[1]['value']
-    result['private_key']['public_exponent'] = private_key_info[2]['value']
-    result['private_key']['private_exponent'] = private_key_info[3]['value']
-    result['private_key']['prime_1'] = private_key_info[4]['value']
-    result['private_key']['prime_2'] = private_key_info[5]['value']
-    result['private_key']['exponent_1'] = private_key_info[6]['value']
-    result['private_key']['exponent_2'] = private_key_info[7]['value']
-    result['private_key']['coefficient'] = private_key_info[8]['value']
+    result['parameters']['key_encryption_algorithm_id'] = key_parameters[0]['value']
+    result['parameters']['modulus'] = key_parameters[1]['value']
+    result['parameters']['public_exponent'] = key_parameters[2]['value']
+    result['parameters']['private_exponent'] = key_parameters[3]['value']
+    result['parameters']['prime_1'] = key_parameters[4]['value']
+    result['parameters']['prime_2'] = key_parameters[5]['value']
+    result['parameters']['exponent_1'] = key_parameters[6]['value']
+    result['parameters']['exponent_2'] = key_parameters[7]['value']
+    result['parameters']['coefficient'] = key_parameters[8]['value']
 
     return result
 
 
+def extract_public_key_pkcs8(decoded_der: list) -> dict:
+    result = {}
+
+    key_info = decoded_der[0]['value']
+    result['version'] = key_info[0]['value']
+    result['algorithm'] = 'RSA' if key_info[1]['value'] == RSA_OID else key_info[1]['value']
+    result['parameters'] = {}
+
+    private_key = decode(key_info[2]['value'])
+    key_parameters = private_key[0]['value']
+
+    result['parameters']['key_encryption_algorithm_id'] = key_parameters[0]['value']
+    result['parameters']['modulus'] = key_parameters[1]['value']
+    result['parameters']['public_exponent'] = key_parameters[2]['value']
+    result['parameters']['private_exponent'] = key_parameters[3]['value']
+    result['parameters']['prime_1'] = key_parameters[4]['value']
+    result['parameters']['prime_2'] = key_parameters[5]['value']
+    result['parameters']['exponent_1'] = key_parameters[6]['value']
+    result['parameters']['exponent_2'] = key_parameters[7]['value']
+    result['parameters']['coefficient'] = key_parameters[8]['value']
+
+    return result
+
 
 def main():
-    with open(sys.argv[1], 'r') as f:
+    parser = ArgumentParser()
+    parser.add_argument('-i', '--input')
+    parser.add_argument('-o', '--output')
+    parser.add_argument('--private', action='store_true')
+
+    opts = parser.parse_args()
+
+    with open(opts.input, 'r') as f:
         lines = f.readlines()
         der = ''.join(line.strip() for line in lines[1:-1])
         data = base64.b64decode(der)
-
         decoded = decode(data)
-        infos = extract_private_key_pkcs8(decoded)
 
-        print('version: {}'.format(infos['version']))
-        print('algorithm: {}'.format(infos['private_key_algorithm']))
-        print('private_key:')
-        for key, value in infos['private_key'].items():
-            print('\t', end='')
-            print(f'{key}: {value}')
+    if opts.private:
+        private_key_info = extract_private_key_pkcs8(decoded)
+        print(private_key_info)
 
 
 if __name__ == '__main__':
