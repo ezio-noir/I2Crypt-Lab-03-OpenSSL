@@ -2,3 +2,4 @@
 .vscode/
 *.pem
 *.txt
+!Source/requirements.txt
