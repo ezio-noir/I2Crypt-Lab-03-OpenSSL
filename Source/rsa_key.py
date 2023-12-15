@@ -3,21 +3,21 @@ import base64
 import sys
 
 
-def b256_to_int(octets: bytes) -> int:
+def b256_to_int(octets: bytes, order='big') -> int:
     x = 0
     for i in range(len(octets)):
         x = (x << 8) + octets[i]
     return x
 
 
-def int_to_b256(x: int, length=None) -> bytes:
+def int_to_b256(x: int, length=None, order='big') -> bytes:
     result = b''
     while x > 0:
         result += bytes([x & 0b11111111])
         x = x >> 8
     if length is not None and length > len(result):
         result += b'\x00' * (length - len(result))
-    return result[::-1]
+    return result[::-1] if order =='big' else result
 
 
 class ASN1Decoder:
@@ -45,15 +45,6 @@ class ASN1Decoder:
         return (cls.CLASSES[octet >> 6], cls.TAGS[octet & 0b11111])
     
 
-    # Convert base-256 integer into base-10 integer
-    @classmethod
-    def _convert_256_10(cls, octets: bytes):
-        x = 0
-        for i in range(len(octets)):
-            x = (x << 8) + octets[i]
-        return x
-    
-
     # Parse length octets. Return (length of header, length of length field)
     @classmethod
     def _parse_length(cls, octets: int):
@@ -61,7 +52,7 @@ class ASN1Decoder:
             return (octets[0], 1)
         else:
             length_length = octets[0] & 0b01111111
-            return cls._convert_256_10(octets[1:1+length_length]), 1 + length_length
+            return b256_to_int(octets[1:1+length_length]), 1 + length_length
 
 
     # (Recursively) Parse raw bytes into ASN.1 structure
@@ -87,7 +78,7 @@ class ASN1Decoder:
             # Else (i.e. primitive type), then the value is just raw value
             else:
                 if tag == 'INTEGER':
-                    value = cls._convert_256_10(value)
+                    value = b256_to_int(value)
                 elif tag == 'BIT STRING':
                     value = value[1:]
                 result.append({
@@ -166,17 +157,18 @@ class RSAPrivateKey(RSAKey):
         self.iqmp = parameters['iqmp']
 
 
+    # Return key length in bytes (i.e. number of bytes of `n`)
     def key_length(self) -> int:
         if not hasattr(self, '_key_length'):
             count = 0
             n = self.n
             while n > 0:
-                n = n >> 1
+                n = n >> 8
                 count += 1
             self._key_length = count
         return self._key_length
 
-
+    
     @classmethod
     def load_pem_file(cls, path) -> dict:
         assert path.endswith('.pem'), 'Must be a .pem file.'       
@@ -210,12 +202,12 @@ class RSAPrivateKey(RSAKey):
         return cls(parameters=cls.load_pem_file(path)['parameters'])
     
 
-    def decrypt(self, block_type, data) -> bytes:
+    def decrypt_pkcs1v15(self, data: bytes, block_type: bytes = b'\x02') -> bytes:
         y = b256_to_int(data)
         x = pow(y, self.d, self.n)
-        print(x % self.n)
-        plaintext = int_to_b256(x)
-        return plaintext
+        encoded_message = int_to_b256(x)
+        message = encoded_message.split(b'\x00')[-1]
+        return message
 
     
 
@@ -226,12 +218,13 @@ class RSAPublicKey(RSAKey):
         self.e = parameters['e']
 
 
+    # Return key length in bytes (i.e. number of bytes of `n`)
     def key_length(self) -> int:
         if not hasattr(self, '_key_length'):
             count = 0
             n = self.n
             while n > 0:
-                n = n >> 1
+                n = n >> 8
                 count += 1
             self._key_length = count
         return self._key_length
@@ -264,7 +257,7 @@ class RSAPublicKey(RSAKey):
         return cls(parameters=cls.load_pem_file(path)['parameters'])
     
 
-    def encrypt_pkcs1v15(self, block_type: bytes, data: bytes) -> bytes:
+    def encrypt_pkcs1v15(self, data: bytes, block_type: bytes = b'\x02') -> bytes:
         k = self.key_length()
         assert len(data) <= k - 11, 'Message is too long.'
 
@@ -273,15 +266,12 @@ class RSAPublicKey(RSAKey):
         elif block_type == b'\x01':
             padding_string = b'\xFF' * (k - 3 - len(data))
         elif block_type == b'\x02':
-            import random
-            x = random.getrandbits(8 * (k - 3 - len(data)))
-            padding_string = int_to_b256(x, length=k - 3 - len(data))
-            # pass    # A pseudorandom octet
+            from secrets import randbelow
+            padding_string = bytes(randbelow(255) + 1 for _ in range(k - 3 - len(data)))
 
         encrypted_block = b'\x00' + block_type + padding_string + b'\x00' + data
         x = b256_to_int(encrypted_block)
         y = pow(x, self.e, self.n)
-        print(x % self.n)
         ciphertext = int_to_b256(y)
 
         return ciphertext
