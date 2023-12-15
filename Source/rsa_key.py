@@ -3,6 +3,23 @@ import base64
 import sys
 
 
+def b256_to_int(octets: bytes) -> int:
+    x = 0
+    for i in range(len(octets)):
+        x = (x << 8) + octets[i]
+    return x
+
+
+def int_to_b256(x: int, length=None) -> bytes:
+    result = b''
+    while x > 0:
+        result += bytes([x & 0b11111111])
+        x = x >> 8
+    if length is not None and length > len(result):
+        result += b'\x00' * (length - len(result))
+    return result[::-1]
+
+
 class ASN1Decoder:
     # Map tags with tag names
     TAGS = {
@@ -95,8 +112,9 @@ class ASN1Decoder:
 
 # Abstract base class for RSA private and public key
 class RSAKey(ABC):
-    def __init__(self, path):
-        self.path = path
+    @abstractmethod
+    def key_length(self) -> int:
+        pass
 
 
     @classmethod
@@ -148,6 +166,17 @@ class RSAPrivateKey(RSAKey):
         self.iqmp = parameters['iqmp']
 
 
+    def key_length(self) -> int:
+        if not hasattr(self, '_key_length'):
+            count = 0
+            n = self.n
+            while n > 0:
+                n = n >> 1
+                count += 1
+            self._key_length = count
+        return self._key_length
+
+
     @classmethod
     def load_pem_file(cls, path) -> dict:
         assert path.endswith('.pem'), 'Must be a .pem file.'       
@@ -181,11 +210,31 @@ class RSAPrivateKey(RSAKey):
         return cls(parameters=cls.load_pem_file(path)['parameters'])
     
 
+    def decrypt(self, block_type, data) -> bytes:
+        y = b256_to_int(data)
+        x = pow(y, self.d, self.n)
+        print(x % self.n)
+        plaintext = int_to_b256(x)
+        return plaintext
+
+    
+
 # RSA public key class
 class RSAPublicKey(RSAKey):
     def __init__(self, parameters: dict):
         self.n = parameters['n']
         self.e = parameters['e']
+
+
+    def key_length(self) -> int:
+        if not hasattr(self, '_key_length'):
+            count = 0
+            n = self.n
+            while n > 0:
+                n = n >> 1
+                count += 1
+            self._key_length = count
+        return self._key_length
 
 
     @classmethod
@@ -213,3 +262,26 @@ class RSAPublicKey(RSAKey):
     @classmethod
     def from_pem_file(cls, path):
         return cls(parameters=cls.load_pem_file(path)['parameters'])
+    
+
+    def encrypt_pkcs1v15(self, block_type: bytes, data: bytes) -> bytes:
+        k = self.key_length()
+        assert len(data) <= k - 11, 'Message is too long.'
+
+        if block_type == b'\x00':
+            padding_string = b'\x00' * (k - 3 - len(data))
+        elif block_type == b'\x01':
+            padding_string = b'\xFF' * (k - 3 - len(data))
+        elif block_type == b'\x02':
+            import random
+            x = random.getrandbits(8 * (k - 3 - len(data)))
+            padding_string = int_to_b256(x, length=k - 3 - len(data))
+            # pass    # A pseudorandom octet
+
+        encrypted_block = b'\x00' + block_type + padding_string + b'\x00' + data
+        x = b256_to_int(encrypted_block)
+        y = pow(x, self.e, self.n)
+        print(x % self.n)
+        ciphertext = int_to_b256(y)
+
+        return ciphertext

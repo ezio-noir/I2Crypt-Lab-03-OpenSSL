@@ -1,4 +1,4 @@
-from RSAKey import *
+from rsa_key import *
 from argparse import ArgumentParser
 
 
