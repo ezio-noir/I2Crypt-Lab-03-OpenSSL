@@ -2,7 +2,6 @@ from key_load import load_rsa_private_key, load_rsa_public_key
 from cryptography.hazmat.primitives.asymmetric.padding import OAEP, PKCS1v15, MGF1
 from cryptography.hazmat.primitives.hashes import *
 from argparse import ArgumentParser
-from cryptography.hazmat import primitives as prmt
 
 
 def rsa_encrypt(message: bytes, public_key, padding=None):
