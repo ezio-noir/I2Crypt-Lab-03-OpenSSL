@@ -1,8 +1,19 @@
 from utils import b256_to_int, int_to_b256, format_integer
 from asn1_pem_handler import ASN1Decoder
 from math_operation import rsa_encrypt, rsa_decrypt
+import hashlib
 from abc import ABC, abstractmethod
 import sys
+
+
+HASHING_ALGORITHM_IDENTIFIER_PREFIXES = {
+    hashlib.md5: b'\x30\x20\x30\x0c\x06\x08\x2a\x86\x48\x86\xf7\x0d\x02\x05\x05\x00\x04\x10',
+    hashlib.sha1: b'\x30\x21\x30\x09\x06\x05\x2b\x0e\x03\x02\x1a\x05\x00\x04\x14',
+    hashlib.sha224: b'\x30\x2d\x30\x0d\x06\x09\x60\x86\x48\x01\x65\x03\x04\x02\x04\x05\x00\x04\x1c',
+    hashlib.sha256: b'\x30\x31\x30\x0d\x06\x09\x60\x86\x48\x01\x65\x03\x04\x02\x01\x05\x00\x04\x20',
+    hashlib.sha384: b'\x30\x41\x30\x0d\x06\x09\x60\x86\x48\x01\x65\x03\x04\x02\x02\x05\x00\x04\x30',
+    hashlib.sha512: b'\x30\x51\x30\x0d\x06\x09\x60\x86\x48\x01\x65\x03\x04\x02\x03\x05\x00\x04\x40',
+}
 
 
 # Abstract base class for RSA private and public key
@@ -69,18 +80,6 @@ class RSAPrivateKey(RSAKey):
         self.dmq1 = parameters['dmq1']
         self.iqmp = parameters['iqmp']
 
-
-    # Return key length in bytes (i.e. number of bytes of `n`)
-    # def key_length(self) -> int:
-    #     if not hasattr(self, '_key_length'):
-    #         count = 0
-    #         n = self.n
-    #         while n > 0:
-    #             n = n >> 8
-    #             count += 1
-    #         self._key_length = count
-    #     return self._key_length
-
     
     @classmethod
     def load_pem_file(cls, path) -> dict:
@@ -130,8 +129,25 @@ class RSAPrivateKey(RSAKey):
         raise NotImplementedError('Operation is not supported by private key.')
     
 
-    def encrypt_pkcs1v15(self, data: bytes, block_type: bytes = b'\x02'):
-        pass
+    def encrypt_pkcs1v15(self, data: bytes, padding_block_type: bytes = b'\x01'):
+        k = self.key_length()
+
+        assert len(data) <= k - 11, 'Message is too long.'
+
+        if padding_block_type == b'\x00':
+            padding_string = b'\x00' * (k - 3 - len(data))
+        elif padding_block_type == b'\x01':
+            padding_string = b'\xFF' * (k - 3 - len(data))
+        elif padding_block_type == b'\x02':
+            from secrets import randbelow
+            padding_string = bytes(randbelow(255) + 1 for _ in range(k - 3 - len(data)))
+
+        encrypted_block = b'\x00' + padding_block_type + padding_string + b'\x00' + data
+        x = b256_to_int(encrypted_block)
+        y = rsa_decrypt(x, self.n, self.p, self.q, self.dmp1, self.dmq1, self.iqmp)
+        ciphertext = int_to_b256(y, length=k)
+
+        return ciphertext
     
 
     def decrypt_pkcs1v15(self, ciphertext: bytes) -> tuple:
@@ -142,31 +158,17 @@ class RSAPrivateKey(RSAKey):
         return (plaintext, message)
     
 
-    def sign_pcks1v15(self, data: bytes) -> bytes:
-        import hashlib
-        hashed = hashlib.sha256(data).digest()
-        # hashed_prefix = b'\x30\x31\x30\x0d\x06\x09\x60\x86\x48\x01\x65\x03\x04\x02\x01\x05\x00\x04\x20'
-        hashed_prefix = b''
+    def sign_pcks1v15(self, message: bytes, hash=None) -> bytes:
+        if hash is not None:
+            hashed = hash(message).digest()
+            hashed_prefix = HASHING_ALGORITHM_IDENTIFIER_PREFIXES[hash]
+            data = hashed_prefix + hashed
+        else:
+            data = message
 
-        assert len(hashed_prefix) + len(hashed) + 11 <= self.key_length(), "Total length exceeds limit."
+        assert len(data) <= self.key_length() - 11, "Total length exceeds limit."
 
-        signature = RSAPublicKey(
-            parameters={
-                'n': self.n,
-                'e': self.d,
-            }
-        ).encrypt_pkcs1v15(
-            # data=hashed_prefix + hashed,
-            data = data,
-            block_type=b'\x01'
-        )
-
-        def reverse_bit(bits: int):
-            binary_string = format(bits, '08b')
-            return int(binary_string, base=2)
-
-        signature = bytes(reverse_bit(signature[i]) for i in range(len(signature)))
-        return signature
+        return self.encrypt(data=data)
     
 
 # RSA public key class
@@ -216,8 +218,8 @@ class RSAPublicKey(RSAKey):
         return self.encrypt_pkcs1v15(**kwargs)
     
     
-    def decrypt(self, **kwrags):
-        return 1
+    def decrypt(self, **kwargs):
+        return self.decrypt_pkcs1v15(**kwargs)
     
 
     def sign(self, **kwargs):
@@ -225,11 +227,12 @@ class RSAPublicKey(RSAKey):
 
 
     def verify(self, **kwargs):
-        return 1
+        return self.verify_pkcs1v15(**kwargs)
     
 
     def encrypt_pkcs1v15(self, message: bytes, padding_block_type: bytes = b'\x02') -> bytes:
         k = self.key_length()
+
         assert len(message) <= k - 11, 'Message is too long.'
 
         if padding_block_type == b'\x00':
@@ -246,3 +249,26 @@ class RSAPublicKey(RSAKey):
         ciphertext = int_to_b256(y, length=k)
 
         return ciphertext
+    
+
+    def decrypt_pkcs1v15(self, data: bytes) -> bytes:
+        y = b256_to_int(data)
+        x = rsa_encrypt(y, self.e, self.n)
+        plaintext = int_to_b256(x, length=self.key_length())
+        return plaintext
+    
+
+    def verify_pkcs1v15(self, message, signed, hash=None) -> bool:
+        if hash is not None:
+            digested_message = hash(message).digest()
+        else:
+            digested_message = message
+
+        plaintext = self.decrypt(data=signed)
+        hash_prefix = HASHING_ALGORITHM_IDENTIFIER_PREFIXES[hash]
+        digest_info = ASN1Decoder.parse_asn1(plaintext[- len(hash_prefix) - len(digested_message):])[0]
+        digested_message_ = digest_info['value'][1]['value']
+
+        result = (hash_prefix == plaintext[- len(hash_prefix) - len(digested_message_):- len(digested_message_)]) and (digested_message == digested_message_)
+
+        return result

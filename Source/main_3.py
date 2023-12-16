@@ -16,18 +16,20 @@ def main():
         public_key = RSAPublicKey.from_pem_file(opts.key)
         with open(opts.input, 'rb') as f:
             message = f.read()
-            output_bytes = public_key.encrypt_pkcs1v15(data=message)
+            ciphertext = public_key.encrypt_pkcs1v15(message=message)
+        to_write = ciphertext
     elif opts.decrypt:
         private_key = RSAPrivateKey.from_pem_file(opts.key)
         with open(opts.input, 'rb') as f:
             ciphertext = f.read()
-            output_bytes = private_key.decrypt_pkcs1v15(data=ciphertext)
+            plaintext, message = private_key.decrypt_pkcs1v15(ciphertext=ciphertext)
+        to_write = message
 
     if opts.output:
         with open(opts.output, 'wb') as f:
-            f.write(output_bytes)
+            f.write(to_write)
     else:
-        print(output_bytes)
+        print(to_write)
 
 
 if __name__ == '__main__':
